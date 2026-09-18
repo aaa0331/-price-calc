@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>價差速算</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root {
+    --bg-top: #F3F7F0;
+    --bg-bottom: #EEF3E9;
+    --ink: #233821;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg-top: #16241A;
+      --bg-bottom: #101B14;
+      --ink: #E3EEDD;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg-top: #16241A;
+    --bg-bottom: #101B14;
+    --ink: #E3EEDD;
+  }
+  body {
+    margin: 0;
+    background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+    color: var(--ink);
+  }
+  table { width: 100%; }
+  ::-webkit-scrollbar { height: 6px; width: 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useMemo } = React;
+
+// ---------- simple emoji-based icon helpers (no external icon library needed) ----------
+const Icon = ({ children, size = 16, color, style = {} }) => (
+  <span style={{ fontSize: size, lineHeight: 1, color, display: "inline-flex", ...style }}>{children}</span>
+);
+const ArrowLeftRight = (p) => <Icon {...p}>⇄</Icon>;
+const Search = (p) => <Icon {...p}>🔍</Icon>;
+const TrendingUp = (p) => <Icon {...p}>📈</Icon>;
+const Package = (p) => <Icon {...p}>📦</Icon>;
+const Gauge = (p) => <Icon {...p}>🎯</Icon>;
+const Plus = (p) => <Icon {...p}>＋</Icon>;
+const Minus = (p) => <Icon {...p}>－</Icon>;
+const XIcon = (p) => <Icon {...p}>✕</Icon>;
+const ShoppingBag = (p) => <Icon {...p}>🛍️</Icon>;
+
+// ---------- Tier definitions ----------
+const TIERS = [
+  { key: "retail", label: "建議零售價", sub: "一般消費者" },
+  { key: "bronze", label: "優惠顧客．銅級", sub: "約 14% 折扣" },
+  { key: "silver", label: "優惠顧客．銀級", sub: "約 23% 折扣" },
+  { key: "gold", label: "優惠顧客．金級", sub: "約 32% 折扣" },
+  { key: "distributor", label: "直銷商", sub: "25% 折扣" },
+  { key: "seniorConsultant", label: "資深顧問", sub: "35% 折扣" },
+  { key: "successBuilder", label: "成功營造者／合格生產者", sub: "42% 折扣" },
+  { key: "supervisor", label: "合格督導", sub: "50% 折扣" },
+];
+
+// 簡化直銷商折扣等級表門檻（僅供參考，實際達成方式請依官方行銷計劃）
+const RANK_THRESHOLDS = [
+  { min: 4000, label: "督導／準督導", sub: "50%" },
+  { min: 2500, label: "合格生產者", sub: "42%" },
+  { min: 1000, label: "成功營造者", sub: "42%" },
+  { min: 500, label: "資深顧問", sub: "35%" },
+  { min: 0, label: "直銷商", sub: "25%" },
+];
+
+// ---------- Product data (2026/06/17 版本，含稅批發價，單位 NT$；點數為購貨點數 VP) ----------
+// [code, name, vp, retail, bronze, silver, gold, distributor, seniorConsultant, successBuilder, supervisor]
+const RAW = {
+  "均衡營養系列": [
+    ["3T21", "營養蛋白混合飲料隨身包－香草", 12.45, 1078, 935, 838, 742, 838, 742, 675, 599],
+    ["3T22", "營養蛋白混合飲料隨身包－巧克力", 12.45, 1078, 935, 838, 742, 838, 742, 675, 599],
+    ["2770", "營養蛋白混合飲料－香草", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["2771", "營養蛋白混合飲料－巧克力", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["2772", "營養蛋白混合飲料－草莓", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["2335", "營養蛋白混合飲料－芒果", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["1207", "營養蛋白混合飲料－薄荷巧克力", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["2487", "營養蛋白混合飲料－拿鐵", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["0271", "營養蛋白混合飲料－巧餅", 22.80, 1898, 1636, 1461, 1286, 1461, 1286, 1163, 1024],
+    ["072K", "營養蛋白混合飲料－精選植物配方", 23.30, 2204, 1899, 1696, 1492, 1696, 1492, 1350, 1188],
+    ["0367", "兒童營養蛋白混合飲料－香草", 19.95, 1621, 1397, 1247, 1098, 1247, 1098, 993, 874],
+    ["0242", "優質蛋白粉", 17.95, 1457, 1256, 1121, 987, 1121, 987, 893, 785],
+    ["217K", "特級優質蛋白粉", 28.90, 2554, 2216, 1990, 1764, 1990, 1764, 1605, 1426],
+    ["247K", "特級優質蛋白粉－精選植物配方", 28.90, 2851, 2513, 2287, 2061, 2287, 2061, 1903, 1723],
+    ["3122", "草維錠", 10.00, 615, 530, 474, 417, 474, 417, 377, 332],
+    ["3272", "蔬果營養錠", 39.95, 2714, 2338, 2088, 1839, 2088, 1839, 1663, 1463],
+  ],
+  "茶飲系列": [
+    ["044K", "舒活飲", 37.65, 2308, 1989, 1776, 1563, 1776, 1563, 1414, 1244],
+    ["0106", "草本濃縮速溶茶飲－原味", 34.95, 2177, 1875, 1675, 1474, 1675, 1474, 1334, 1173],
+    ["2121", "草本濃縮速溶茶飲－蜜薑口味", 34.95, 2177, 1875, 1675, 1474, 1675, 1474, 1334, 1173],
+    ["0256", "草本濃縮速溶茶飲－覆盆子", 19.95, 1269, 1094, 977, 860, 977, 860, 778, 685],
+    ["0102", "瓜拿那豆速溶茶飲", 14.75, 1042, 898, 801, 706, 801, 706, 638, 562],
+    ["1427", "綠茶飲－原味", 28.25, 1756, 1513, 1351, 1189, 1351, 1189, 1075, 946],
+    ["1428", "綠茶飲－石榴", 28.25, 1756, 1513, 1351, 1189, 1351, 1189, 1075, 946],
+  ],
+  "消化健康系列": [
+    ["2864", "營養纖維粉－蘋果口味", 22.95, 1791, 1544, 1379, 1213, 1379, 1213, 1097, 966],
+    ["2865", "營養纖維粉－原味", 22.95, 1791, 1544, 1379, 1213, 1379, 1213, 1097, 966],
+    ["0006", "濃縮蘆薈汁－原味", 24.95, 1936, 1668, 1490, 1311, 1490, 1311, 1187, 1044],
+    ["1065", "濃縮蘆薈汁－芒果口味", 24.95, 1936, 1668, 1490, 1311, 1490, 1311, 1187, 1044],
+    ["1610", "濃縮蘆薈汁－葡萄口味", 24.95, 1936, 1668, 1490, 1311, 1490, 1311, 1187, 1044],
+    ["1829", "賀寶芙益生菌", 20.45, 1536, 1324, 1182, 1041, 1182, 1041, 941, 828],
+  ],
+  "晶彩視界系列": [
+    ["194K", "舒視錠", 38.75, 2717, 2342, 2091, 1841, 2091, 1841, 1664, 1465],
+  ],
+  "保護力系列": [
+    ["145K", "優護飲", 10.75, 873, 752, 672, 591, 672, 591, 534, 470],
+    ["1502", "紫錐花強健飲－蜂蜜香橙", 9.95, 764, 658, 588, 518, 588, 518, 468, 413],
+  ],
+  "活力能量系列": [
+    ["0022", "五味子活力錠", 15.50, 1158, 998, 891, 784, 891, 784, 710, 625],
+    ["3151", "Liftoff 活力發泡錠－橘子", 15.95, 1049, 904, 807, 711, 807, 711, 643, 566],
+    ["3152", "Liftoff 活力發泡錠－檸檬萊姆", 15.95, 1049, 904, 807, 711, 807, 711, 643, 566],
+    ["0260", "活力點心棒－檸檬", 7.70, 786, 721, 677, 634, 677, 634, 604, 569],
+  ],
+  "思緒健康系列": [
+    ["291K", "益知新膠囊", 53.60, 3330, 2869, 2562, 2255, 2562, 2255, 2040, 1794],
+  ],
+  "循環健康系列": [
+    ["0267", "倍他營養燕麥飲", 20.20, 1689, 1467, 1319, 1170, 1319, 1170, 1066, 947],
+    ["0036", "夜寧新", 89.95, 6103, 5258, 4696, 4133, 4696, 4133, 3739, 3289],
+    ["0065", "深海魚油膠囊", 25.75, 1981, 1707, 1525, 1342, 1525, 1342, 1214, 1068],
+    ["0100", "南極磷蝦油膠囊", 35.50, 2515, 2167, 1935, 1703, 1935, 1703, 1540, 1356],
+  ],
+  "行動靈活系列": [
+    ["0565", "複合優質鈣片", 10.70, 825, 711, 635, 559, 635, 559, 506, 445],
+    ["1000", "關捷寶營養錠", 44.00, 3371, 2904, 2594, 2283, 2594, 2283, 2065, 1817],
+  ],
+  "女性保養系列": [
+    ["127K", "女士之選（大豆異黃酮錠）", 20.00, 1498, 1292, 1153, 1014, 1153, 1014, 918, 807],
+    ["0056", "膠原蛋白美妍飲", 43.55, 3221, 2776, 2479, 2182, 2479, 2182, 1974, 1737],
+    ["0566", "當歸錠", 13.30, 956, 823, 735, 647, 735, 647, 586, 516],
+    ["0279", "複合莓菁華膠囊", 13.95, 1118, 964, 861, 757, 861, 757, 686, 603],
+  ],
+  "體態管理系列": [
+    ["0210", "甲殼纖維素", 24.05, 1708, 1472, 1315, 1157, 1315, 1157, 1047, 921],
+    ["0111", "細喜錠", 15.75, 823, 710, 633, 558, 633, 558, 504, 444],
+    ["0049", "享孅錠", 34.20, 2513, 2165, 1933, 1702, 1933, 1702, 1539, 1355],
+  ],
+  "運動系列": [
+    ["1463", "CR7 勁能飲", 24.90, 1842, 1604, 1446, 1287, 1446, 1287, 1176, 1050],
+    ["1457", "H24 運動營養飲", 41.60, 3137, 2704, 2414, 2124, 2414, 2124, 1922, 1691],
+    ["1459", "H24 賦活能量飲", 54.75, 3922, 3379, 3018, 2655, 3018, 2655, 2402, 2114],
+  ],
+  "咖啡系列": [
+    ["011K", "金質冰咖啡－摩卡", 25.75, 1883, 1622, 1449, 1275, 1449, 1275, 1153, 1014],
+    ["012K", "金質冰咖啡－拿鐵", 25.75, 1883, 1622, 1449, 1275, 1449, 1275, 1153, 1014],
+  ],
+  "全方位營養產品組": [
+    ["75Z8", "優質營養早餐組", 63.70, 5147, 4435, 3961, 3486, 3961, 3486, 3154, 2774],
+    ["75Z9", "活力營養早餐組", 62.50, 4876, 4202, 3752, 3302, 3752, 3302, 2987, 2628],
+    ["76Z0", "促進代謝早餐組", 82.70, 6011, 5180, 4625, 4071, 4625, 4071, 3682, 3239],
+    ["76Z1", "體重管理組", 83.50, 5514, 4751, 4243, 3734, 4243, 3734, 3378, 2972],
+  ],
+  "青春活力營養產品組": [
+    ["76Z8", "青春活力組－靈活", 54.70, 4196, 3615, 3229, 2841, 3229, 2841, 2570, 2262],
+    ["76Z9", "青春活力組－消化", 68.35, 5264, 4536, 4050, 3565, 4050, 3565, 3225, 2837],
+    ["77Z0", "青春活力組－美麗升級", 90.80, 6794, 5854, 5228, 4601, 5228, 4601, 4162, 3661],
+    ["77Z1", "美食三法寶組", 74.00, 5044, 4347, 3882, 3417, 3882, 3417, 3090, 2718],
+    ["77Z2", "青春活力組－清晰", 92.65, 6550, 5644, 5040, 4435, 5040, 4435, 4013, 3530],
+    ["77Z3", "青春活力組－360 度循環通暢", 171.40, 12288, 10600, 9473, 8348, 9473, 8348, 7559, 6659],
+  ],
+  "SKIN 肌膚保養系列": [
+    ["0765", "SKIN 舒顏潔膚凝膠", 16.75, 998, 860, 768, 675, 768, 675, 611, 538],
+    ["0766", "SKIN 煥顏潔膚凝膠", 16.75, 998, 860, 768, 675, 768, 675, 611, 538],
+    ["0767", "SKIN 草本化妝水 50ml", 12.70, 756, 651, 582, 512, 582, 512, 463, 407],
+    ["0891", "SKIN 草本化妝水 150ml", 32.30, 1894, 1632, 1457, 1283, 1457, 1283, 1160, 1021],
+    ["0768", "SKIN 防皺極緻精華霜", 37.70, 2243, 1933, 1726, 1519, 1726, 1519, 1374, 1209],
+    ["0770", "SKIN 緊緻眼膠", 26.35, 1569, 1351, 1208, 1063, 1208, 1063, 961, 845],
+    ["0771", "SKIN 保濕眼霜", 26.35, 1569, 1351, 1208, 1063, 1208, 1063, 961, 845],
+    ["0772", "SKIN 瞬采磨砂膏", 13.10, 780, 672, 601, 528, 601, 528, 478, 421],
+    ["0773", "SKIN 深層淨化面膜", 14.20, 844, 728, 650, 572, 650, 572, 518, 456],
+    ["0769", "SKIN 煥顏日間乳液", 28.40, 1689, 1455, 1300, 1145, 1300, 1145, 1035, 910],
+    ["0899", "SKIN 防曬乳液 SPF30/PA+++", 28.40, 1689, 1455, 1300, 1145, 1300, 1145, 1035, 910],
+    ["0774", "SKIN 賦活晚霜", 28.40, 1689, 1455, 1300, 1145, 1300, 1145, 1035, 910],
+  ],
+  "SKIN 產品組": [
+    ["60Z7", "SKIN 極緻防皺保養組合（中性至乾性）", 251.95, 14965, 12894, 11514, 10135, 11514, 10135, 9169, 8064],
+    ["60Z8", "SKIN 極緻防皺保養組合（中性至油性）", 251.95, 14965, 12894, 11514, 10135, 11514, 10135, 9169, 8064],
+  ],
+  "維他命面膜系列": [
+    ["111K", "維他命面膜－保濕", 9.50, 600, 524, 474, 423, 474, 423, 387, 348],
+    ["112K", "維他命面膜－美白", 16.80, 1002, 863, 771, 678, 771, 678, 613, 540],
+  ],
+  "蘆薈系列－頭髮保養": [
+    ["2564", "蘆薈洗髮露", 8.30, 518, 446, 398, 351, 398, 351, 317, 279],
+  ],
+  "蘆薈系列－身體保養": [
+    ["2561", "蘆薈滋潤沐浴精", 8.30, 509, 439, 392, 345, 392, 345, 312, 275],
+    ["2562", "蘆薈護膚凝露", 8.30, 509, 439, 392, 345, 392, 345, 312, 275],
+    ["2563", "蘆薈滋潤乳液", 8.30, 509, 439, 392, 345, 392, 345, 312, 275],
+  ],
+};
+
+const FIELD_ORDER = [
+  "retail", "bronze", "silver", "gold", "distributor",
+  "seniorConsultant", "successBuilder", "supervisor",
+];
+
+const PRODUCTS = Object.entries(RAW).flatMap(([category, rows]) =>
+  rows.map((r) => {
+    const [code, name, vp, ...prices] = r;
+    const obj = { category, code, name, vp, id: `${category}__${code}` };
+    FIELD_ORDER.forEach((k, i) => (obj[k] = prices[i]));
+    return obj;
+  })
+);
+const PRODUCT_MAP = Object.fromEntries(PRODUCTS.map((p) => [p.id, p]));
+const CATEGORIES = Object.keys(RAW);
+
+function fmt(n) {
+  return "NT$" + Math.round(n).toLocaleString("zh-TW");
+}
+function fmtVp(n) {
+  return n.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function tierLabel(key) {
+  const t = TIERS.find((t) => t.key === key);
+  return t ? t.label : key;
+}
+function rankFor(points) {
+  return RANK_THRESHOLDS.find((r) => points >= r.min) || RANK_THRESHOLDS[RANK_THRESHOLDS.length - 1];
+}
+
+// ---------- local, per-device profile storage (private to this browser only) ----------
+const PROFILE_KEY = "herbalife-price-diff-profile";
+function loadProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+function saveProfile(profile) {
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  } catch (e) {
+    // storage unavailable (e.g. private browsing) — ignore, stays in-memory only
+  }
+}
+
+function App() {
+  const initialProfile = loadProfile();
+  const [tierA, setTierA] = useState("supervisor");
+  const [tierB, setTierB] = useState("retail");
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("全部");
+  const [cart, setCart] = useState({});
+  const [accumPoints, setAccumPoints] = useState(0);
+  const [avatar, setAvatar] = useState(initialProfile.avatar || null);
+  const [displayName, setDisplayName] = useState(initialProfile.displayName || "");
+
+  const handleAvatarUpload = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      setAvatar(dataUrl);
+      saveProfile({ avatar: dataUrl, displayName });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleNameChange = (v) => {
+    setDisplayName(v);
+    saveProfile({ avatar, displayName: v });
+  };
+
+  const addToCart = (id) => setCart((c) => ({ ...c, [id]: (c[id] || 0) + 1 }));
+  const changeQty = (id, delta) => {
+    setCart((c) => {
+      const next = { ...c, [id]: (c[id] || 0) + delta };
+      if (next[id] <= 0) delete next[id];
+      return next;
+    });
+  };
+  const setQtyDirect = (id, val) => {
+    const v = Math.max(1, Number(val) || 1);
+    setCart((c) => ({ ...c, [id]: v }));
+  };
+  const removeFromCart = (id) => {
+    setCart((c) => {
+      const next = { ...c };
+      delete next[id];
+      return next;
+    });
+  };
+  const clearCart = () => setCart({});
+
+  const cartItems = Object.entries(cart)
+    .map(([id, qty]) => ({ ...PRODUCT_MAP[id], qty }))
+    .filter((i) => i.id);
+
+  const totals = cartItems.reduce(
+    (acc, item) => {
+      const cost = item[tierA] * item.qty;
+      const sell = item[tierB] * item.qty;
+      acc.cost += cost;
+      acc.sell += sell;
+      acc.profit += sell - cost;
+      acc.vp += item.vp * item.qty;
+      return acc;
+    },
+    { cost: 0, sell: 0, profit: 0, vp: 0 }
+  );
+
+  const newTotalVp = accumPoints + totals.vp;
+  const currentRank = rankFor(accumPoints);
+  const newRank = rankFor(newTotalVp);
+  const nextThreshold = RANK_THRESHOLDS.filter((r) => r.min > newTotalVp).sort((a, b) => a.min - b.min)[0];
+
+  const filtered = useMemo(() => {
+    return PRODUCTS.filter((p) => {
+      const matchCat = category === "全部" || p.category === category;
+      const matchSearch =
+        !search ||
+        p.name.includes(search) ||
+        p.code.toLowerCase().includes(search.toLowerCase());
+      return matchCat && matchSearch;
+    });
+  }, [search, category]);
+
+  const cartCount = Object.keys(cart).length;
+
+  return (
+    <div className="min-h-screen w-full" style={{ fontFamily: '"PingFang TC","Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif' }}>
+      <div className="max-w-5xl mx-auto px-5 py-8">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-8 gap-4">
+          <div className="min-w-0">
+            <div className="text-xs tracking-wide mb-1" style={{ color: "#6B8F5E" }}>
+              2026 年 06 月 17 日版本｜依官方價目表整理
+            </div>
+            <h1 className="text-3xl font-bold" style={{ color: "#1F3B1E", letterSpacing: "0.5px" }}>
+              價差速算
+            </h1>
+            <p className="text-sm mt-1" style={{ color: "#4C6B45" }}>
+              可一次勾選多項產品，算出整筆訂單的利潤與點數
+            </p>
+          </div>
+
+          <div className="flex flex-col items-center gap-1.5 shrink-0">
+            <label
+              className="relative flex items-center justify-center rounded-full w-16 h-16 cursor-pointer overflow-hidden"
+              style={{ background: "#2F5D2A", border: "2px solid #CBDDC3" }}
+              title="上傳個人照片"
+            >
+              {avatar ? (
+                <img src={avatar} alt="頭像" className="w-full h-full object-cover" />
+              ) : (
+                <Package size={24} color="#EAF2E3" />
+              )}
+              <input type="file" accept="image/*" onChange={handleAvatarUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+            </label>
+            <input
+              type="text"
+              value={displayName}
+              onChange={(e) => handleNameChange(e.target.value)}
+              placeholder="你的名字"
+              className="w-24 text-center text-xs rounded-md border px-1.5 py-1"
+              style={{ borderColor: "#CBDDC3", background: "#F8FBF6", color: "#233821" }}
+            />
+          </div>
+        </div>
+
+        {/* Tier selectors */}
+        <div className="rounded-2xl p-5 mb-6" style={{ background: "#FFFFFF", boxShadow: "0 1px 0 #DDE7D5" }}>
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3 items-end">
+            <div>
+              <label className="text-xs font-medium" style={{ color: "#6B8F5E" }}>我的進貨身份（我的成本）</label>
+              <select value={tierA} onChange={(e) => setTierA(e.target.value)} className="w-full mt-1 rounded-lg border px-3 py-2 text-sm" style={{ borderColor: "#CBDDC3", background: "#F8FBF6" }}>
+                {TIERS.map((t) => <option key={t.key} value={t.key}>{t.label}（{t.sub}）</option>)}
+              </select>
+            </div>
+            <button
+              onClick={() => { setTierA(tierB); setTierB(tierA); }}
+              className="justify-self-center rounded-full p-2 mb-1"
+              style={{ background: "#EAF2E3", border: "1px solid #CBDDC3" }}
+              title="對調"
+            >
+              <ArrowLeftRight size={18} color="#2F5D2A" />
+            </button>
+            <div>
+              <label className="text-xs font-medium" style={{ color: "#6B8F5E" }}>賣給對方的身份（對方付我的價格）</label>
+              <select value={tierB} onChange={(e) => setTierB(e.target.value)} className="w-full mt-1 rounded-lg border px-3 py-2 text-sm" style={{ borderColor: "#CBDDC3", background: "#F8FBF6" }}>
+                {TIERS.map((t) => <option key={t.key} value={t.key}>{t.label}（{t.sub}）</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Cart summary */}
+        <div className="rounded-2xl p-5 mb-6" style={{ background: "#20401D", color: "#EAF2E3" }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2 text-sm opacity-90">
+              <ShoppingBag size={16} />
+              已選 {cartCount} 項產品
+            </div>
+            {cartCount > 0 && (
+              <button onClick={clearCart} className="text-xs underline opacity-70 hover:opacity-100">清空清單</button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pb-4 mb-4" style={{ borderBottom: "1px solid rgba(234,242,227,0.15)" }}>
+            <div>
+              <div className="text-xs opacity-70">我的總成本</div>
+              <div className="text-lg font-semibold">{fmt(totals.cost)}</div>
+            </div>
+            <div>
+              <div className="text-xs opacity-70">對方總付款</div>
+              <div className="text-lg font-semibold">{fmt(totals.sell)}</div>
+            </div>
+            <div>
+              <div className="flex items-center gap-1 text-xs opacity-70"><TrendingUp size={12} /> 總利潤</div>
+              <div className="text-lg font-bold" style={{ color: totals.profit >= 0 ? "#B7E4A0" : "#F3A6A6" }}>
+                {totals.profit >= 0 ? "+" : "－"}{fmt(Math.abs(totals.profit))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs opacity-70">訂單總點數</div>
+              <div className="text-lg font-semibold">{fmtVp(totals.vp)}</div>
+            </div>
+          </div>
+
+          {cartItems.length === 0 ? (
+            <div className="text-sm opacity-70 py-4 text-center">下方表格點「＋」把產品加入清單，可以一次加很多項一起算</div>
+          ) : (
+            <div className="space-y-2">
+              {cartItems.map((item) => {
+                const lineProfit = (item[tierB] - item[tierA]) * item.qty;
+                return (
+                  <div key={item.id} className="flex items-center gap-3 rounded-xl px-3 py-2" style={{ background: "rgba(234,242,227,0.08)" }}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm truncate">{item.name}</div>
+                      <div className="text-xs opacity-60">{item.code}｜{fmtVp(item.vp)} 點/件</div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => changeQty(item.id, -1)} className="rounded-full p-1" style={{ background: "rgba(234,242,227,0.15)" }}><Minus size={12} /></button>
+                      <input type="number" min={1} value={item.qty} onChange={(e) => setQtyDirect(item.id, e.target.value)} className="w-10 text-center text-sm rounded-md py-0.5" style={{ background: "rgba(255,255,255,0.1)", color: "#EAF2E3" }} />
+                      <button onClick={() => changeQty(item.id, 1)} className="rounded-full p-1" style={{ background: "rgba(234,242,227,0.15)" }}><Plus size={12} /></button>
+                    </div>
+                    <div className="text-sm font-semibold w-24 text-right" style={{ color: lineProfit >= 0 ? "#B7E4A0" : "#F3A6A6" }}>
+                      {lineProfit >= 0 ? "+" : "－"}{fmt(Math.abs(lineProfit))}
+                    </div>
+                    <button onClick={() => removeFromCart(item.id)} className="opacity-60 hover:opacity-100"><XIcon size={14} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Points tracker */}
+        <div className="rounded-2xl p-5 mb-8" style={{ background: "#FFFFFF", boxShadow: "0 1px 0 #DDE7D5" }}>
+          <div className="flex items-center gap-2 mb-3">
+            <Gauge size={18} color="#2F5D2A" />
+            <h2 className="text-base font-semibold" style={{ color: "#1F3B1E" }}>本月點數試算</h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="text-xs font-medium" style={{ color: "#6B8F5E" }}>目前已累積購貨點數</label>
+              <input type="number" min={0} value={accumPoints} onChange={(e) => setAccumPoints(Math.max(0, Number(e.target.value) || 0))} className="w-full mt-1 rounded-lg border px-3 py-2 text-sm" style={{ borderColor: "#CBDDC3", background: "#F8FBF6" }} />
+              <div className="text-xs mt-1" style={{ color: "#9BB090" }}>對應等級：{currentRank.label}</div>
+            </div>
+            <div>
+              <label className="text-xs font-medium" style={{ color: "#6B8F5E" }}>清單訂單點數</label>
+              <div className="w-full mt-1 rounded-lg border px-3 py-2 text-sm" style={{ borderColor: "#CBDDC3", background: "#F8FBF6" }}>
+                {fmtVp(totals.vp)} 點（{cartCount} 項產品）
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium" style={{ color: "#6B8F5E" }}>累積後總點數</label>
+              <div className="w-full mt-1 rounded-lg border px-3 py-2 text-sm font-semibold" style={{ borderColor: "#CBDDC3", background: "#EEF6E9", color: "#1F3B1E" }}>
+                {fmtVp(newTotalVp)} 點
+              </div>
+              <div className="text-xs mt-1" style={{ color: "#2F5D2A" }}>
+                對應等級：{newRank.label}
+                {nextThreshold && (<span style={{ color: "#9BB090" }}>　再 {fmtVp(nextThreshold.min - newTotalVp)} 點可達 {nextThreshold.label}</span>)}
+              </div>
+            </div>
+          </div>
+          <p className="text-xs mt-3" style={{ color: "#9BB090" }}>
+            等級對照僅依「簡化直銷商折扣等級表」的點數門檻概估，實際資格認定仍需依當月／累計月份與個人購貨點數等官方規則，請以公司系統結算為準。
+          </p>
+        </div>
+
+        {/* Product browser */}
+        <div className="rounded-2xl p-5" style={{ background: "#FFFFFF", boxShadow: "0 1px 0 #DDE7D5" }}>
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between mb-4">
+            <h2 className="text-base font-semibold" style={{ color: "#1F3B1E" }}>
+              產品清單：我進貨（{tierLabel(tierA)}）→ 賣給對方（{tierLabel(tierB)}）
+            </h2>
+            <div className="flex gap-2">
+              <div className="flex items-center gap-2 rounded-lg border px-2 py-1.5" style={{ borderColor: "#CBDDC3", background: "#F8FBF6" }}>
+                <Search size={14} color="#6B8F5E" />
+                <input placeholder="搜尋品名或貨號" value={search} onChange={(e) => setSearch(e.target.value)} className="text-sm bg-transparent outline-none w-32" />
+              </div>
+              <select value={category} onChange={(e) => setCategory(e.target.value)} className="text-sm rounded-lg border px-2 py-1.5" style={{ borderColor: "#CBDDC3", background: "#F8FBF6" }}>
+                <option value="全部">全部系列</option>
+                {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr style={{ color: "#6B8F5E" }} className="text-left">
+                  <th className="py-2 pr-3 font-medium">產品</th>
+                  <th className="py-2 px-2 font-medium text-right">點數</th>
+                  <th className="py-2 px-2 font-medium text-right">我的成本</th>
+                  <th className="py-2 px-2 font-medium text-right">對方付我</th>
+                  <th className="py-2 px-2 font-medium text-right">單件利潤</th>
+                  <th className="py-2 pl-2 font-medium text-center">加入</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((p) => {
+                  const d = p[tierB] - p[tierA];
+                  const inCart = !!cart[p.id];
+                  return (
+                    <tr key={p.id} style={{ borderTop: "1px solid #EEF3E9", background: inCart ? "#EEF6E9" : "transparent" }}>
+                      <td className="py-2 pr-3">
+                        <div style={{ color: "#233821" }}>{p.name}</div>
+                        <div className="text-xs" style={{ color: "#9BB090" }}>{p.code}｜{p.category}</div>
+                      </td>
+                      <td className="py-2 px-2 text-right" style={{ color: "#9BB090" }}>{fmtVp(p.vp)}</td>
+                      <td className="py-2 px-2 text-right" style={{ color: "#233821" }}>{fmt(p[tierA])}</td>
+                      <td className="py-2 px-2 text-right" style={{ color: "#233821" }}>{fmt(p[tierB])}</td>
+                      <td className="py-2 px-2 text-right font-semibold" style={{ color: d >= 0 ? "#2F5D2A" : "#B14646" }}>
+                        {d >= 0 ? "+" : "－"}{fmt(Math.abs(d))}
+                      </td>
+                      <td className="py-2 pl-2 text-center">
+                        <button
+                          onClick={() => addToCart(p.id)}
+                          className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
+                          style={{ background: inCart ? "#2F5D2A" : "#EAF2E3", color: inCart ? "#EAF2E3" : "#2F5D2A" }}
+                        >
+                          <Plus size={12} />
+                          {inCart ? `×${cart[p.id]}` : "加入"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={6} className="py-6 text-center" style={{ color: "#9BB090" }}>找不到符合的產品</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <p className="text-xs mt-6" style={{ color: "#9BB090" }}>
+          價格已含 5% 加值營業稅，資料來源為 2026/06/17 版賀寶芙產品價目表。文宣品及輔銷品不適用折扣優惠，未列入本工具。實際交易金額與資格認定仍以官方訂購系統結算為準。個人照片與名字僅儲存在您自己這台裝置的瀏覽器中，不會上傳、也不會被其他使用者看到。
+        </p>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
